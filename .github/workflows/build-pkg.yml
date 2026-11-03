@@ -1,0 +1,65 @@
+name: Build PS4 XAvatar
+
+on:
+  workflow_dispatch:
+  push:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Get project
+        uses: actions/checkout@v4
+
+      - name: Extract project ZIP
+        run: |
+          unzip -q ps4-xavatar-changer.zip -d extracted
+          ls -R extracted/ps4-xavatar-changer
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang lld
+
+      - name: Download OpenOrbis
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p tc-dl tc
+          gh release view --repo OpenOrbis/OpenOrbis-PS4-Toolchain --json tagName,assets -q '.tagName, (.assets[].name)' > tc-dl/assets.txt
+          ASSET=$(tail -n +2 tc-dl/assets.txt | grep -i linux | head -n1 || true)
+          if [ -z "$ASSET" ]; then
+            ASSET=$(tail -n +2 tc-dl/assets.txt | grep -iE '\.(zip|tar\.gz)$' | grep -viE 'win|mac|osx' | head -n1 || true)
+          fi
+          test -n "$ASSET"
+          gh release download --repo OpenOrbis/OpenOrbis-PS4-Toolchain --pattern "$ASSET" --dir tc-dl
+          case "$ASSET" in
+            *.zip) unzip -q "tc-dl/$ASSET" -d tc ;;
+            *.tar.gz) tar -xzf "tc-dl/$ASSET" -C tc ;;
+          esac
+          ROOT=$(find tc -maxdepth 3 -type d -name samples -printf '%h\n' | head -n1)
+          test -n "$ROOT"
+          echo "OO_PS4_TOOLCHAIN=$GITHUB_WORKSPACE/$ROOT" >> "$GITHUB_ENV"
+          chmod -R +x "$ROOT/bin/linux" || true
+
+      - name: Build diagnostic app
+        run: |
+          cp -r "$OO_PS4_TOOLCHAIN/samples/hello_world" build
+          SRC=$(find build -name main.c | head -n1)
+          test -n "$SRC"
+          cp extracted/ps4-xavatar-changer/src/diag_main.c "$SRC"
+          cd build
+          make 2>&1 | tee ../build.log
+
+      - name: Save build results
+        if: always()
+        run: |
+          mkdir -p out
+          find build -name '*.pkg' -exec cp {} out/ \; || true
+          cp build.log out/ 2>/dev/null || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: xavatar-diagnostic
+          path: out/
